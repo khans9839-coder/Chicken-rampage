@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chicken Rampage</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#111; font-family:Arial,sans-serif; }
+  canvas { display:block; width:100vw; height:100vh; image-rendering:pixelated; }
+  #hud { position:fixed; inset:0; pointer-events:none; color:white; text-shadow:2px 2px 3px #000; }
+  #top { display:flex; justify-content:space-between; padding:16px 20px; font-size:20px; font-weight:bold; }
+  #bottom { position:absolute; bottom:18px; left:20px; right:20px; display:flex; justify-content:space-between; font-size:22px; font-weight:bold; }
+  #crosshair { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); font-size:28px; }
+  #message { position:absolute; left:50%; top:18%; transform:translateX(-50%); font-size:34px; font-weight:900; text-align:center; }
+  #overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(#67c7ff,#9be27c); color:#17210e; }
+  .panel { width:min(760px,90vw); background:rgba(255,255,255,.92); padding:30px; border-radius:18px; box-shadow:0 20px 60px rgba(0,0,0,.3); text-align:center; }
+  h1 { margin:0 0 8px; font-size:54px; }
+  button { border:0; border-radius:12px; padding:14px 28px; font-size:22px; font-weight:bold; background:#ffb000; cursor:pointer; box-shadow:0 6px 0 #b87500; }
+  button:active { transform:translateY(4px); box-shadow:0 2px 0 #b87500; }
+  .keys { line-height:1.7; font-size:18px; }
+  #upgrade { display:none; position:fixed; inset:0; align-items:center; justify-content:center; background:rgba(0,0,0,.65); }
+  .cards { display:flex; gap:14px; flex-wrap:wrap; justify-content:center; }
+  .card { width:190px; background:white; padding:16px; border-radius:14px; cursor:pointer; color:#222; box-shadow:0 8px 24px rgba(0,0,0,.25); }
+  .card:hover { transform:translateY(-4px); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div id="top"><span id="wave">Wave 1</span><span id="score">Score 0</span><span id="mult">x1.0</span></div>
+  <div id="crosshair">+</div>
+  <div id="message"></div>
+  <div id="bottom"><span id="health">❤ 100</span><span id="ammo">Ammo 12 / 72</span></div>
+</div>
+
+<div id="overlay">
+  <div class="panel">
+    <h1>🐔 Chicken Rampage</h1>
+    <p>Defend the cartoon farm from waves of mischievous chickens.</p>
+    <div class="keys">
+      <b>WASD</b> move · <b>Mouse</b> aim · <b>Click</b> shoot · <b>R</b> reload<br>
+      <b>Shift</b> sprint · <b>Space</b> jump · <b>1/2/3</b> switch weapons
+    </div>
+    <p>Chickens vanish in harmless puffs of feathers. No blood, no gore.</p>
+    <button id="start">Start Rampage</button>
+  </div>
+</div>
+
+<div id="upgrade">
+  <div class="panel">
+    <h2>Choose an Upgrade</h2>
+    <div class="cards" id="cards"></div>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+let W=innerWidth,H=innerHeight;
+function resize(){W=canvas.width=innerWidth;H=canvas.height=innerHeight}
+addEventListener('resize',resize);resize();
+
+const keys={}; let mouseDown=false, started=false, paused=false;
+addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='KeyR')reload();if(['Digit1','Digit2','Digit3'].includes(e.code)) weapon=+e.code.slice(-1)-1});
+addEventListener('keyup',e=>keys[e.code]=false);
+canvas.addEventListener('mousedown',()=>{mouseDown=true;canvas.requestPointerLock?.()});
+addEventListener('mouseup',()=>mouseDown=false);
+addEventListener('mousemove',e=>{if(document.pointerLockElement===canvas && started&&!paused){player.a+=e.movementX*.0025;player.pitch=Math.max(-.65,Math.min(.65,player.pitch+e.movementY*.0018))}});
+
+const player={x:0,y:0,z:0,a:0,pitch:0,hp:100,vy:0,onGround:true,speed:4.2};
+let score=0,wave=1,mult=1,comboTimer=0,weapon=0,lastShot=0,reloading=false;
+const weapons=[
+ {name:'Corn Popper',clip:12,ammo:72,mag:12,rate:240,damage:32,spread:.035,reload:900},
+ {name:'Feather Blaster',clip:30,ammo:120,mag:30,rate:95,damage:15,spread:.06,reload:1200},
+ {name:'Eggsploder',clip:5,ammo:25,mag:5,rate:650,damage:85,spread:.02,reload:1500}
+];
+let enemies=[],particles=[],pickups=[],props=[];
+for(let i=0;i<40;i++) props.push({x:(Math.random()-.5)*55,y:(Math.random()-.5)*55,type:Math.random()<.5?'hay':'fence'});
+
+function spawnWave(){
+  enemies=[];
+  const n=6+wave*3;
+  for(let i=0;i<n;i++){
+    const r=14+Math.random()*20,ang=Math.random()*Math.PI*2;
+    const roll=Math.random();
+    let type=roll<.15?'flyer':roll<.3?'armored':roll<.38?'runner':'normal';
+    if(i===n-1 && wave%5===0) type='boss';
+    const stat={
+      normal:[45,1.1,1],runner:[30,2.0,.8],flyer:[35,1.35,.9],armored:[100,.75,1.2],boss:[450,.65,2.2]
+    }[type];
+    enemies.push({x:player.x+Math.cos(ang)*r,y:player.y+Math.sin(ang)*r,z:type==='flyer'?1.8:0,hp:stat[0],max:stat[0],speed:stat[1],scale:stat[2],type,hit:0,dead:false});
+  }
+  message(`WAVE ${wave}`);
+}
+
+function message(t){const m=document.getElementById('message');m.textContent=t;setTimeout(()=>{if(m.textContent===t)m.textContent=''},1200)}
+
+function reload(){
+  const w=weapons[weapon]; if(reloading||w.clip===w.mag||w.ammo<=0)return;
+  reloading=true;message('RELOADING');
+  setTimeout(()=>{let need=w.mag-w.clip,take=Math.min(need,w.ammo);w.clip+=take;w.ammo-=take;reloading=false},w.reload);
+}
+
+function shoot(now){
+  const w=weapons[weapon]; if(reloading||now-lastShot<w.rate)return;
+  if(w.clip<=0){reload();return}
+  lastShot=now;w.clip--;
+  player.a+=(Math.random()-.5)*w.spread; player.pitch+=(Math.random()-.5)*w.spread;
+  let best=null,bestD=999;
+  for(const e of enemies){
+    if(e.dead)continue;
+    const dx=e.x-player.x,dy=e.y-player.y,d=Math.hypot(dx,dy);
+    let da=Math.atan2(dy,dx)-player.a; da=Math.atan2(Math.sin(da),Math.cos(da));
+    const targetPitch=(e.z+e.scale*.8-player.z-1.2)/Math.max(d,.1);
+    if(Math.abs(da)<.035+e.scale/d && Math.abs(player.pitch-targetPitch)<.09+e.scale/d && d<bestD){best=e;bestD=d}
+  }
+  if(best){
+    best.hp-=w.damage;best.hit=.12;
+    burst(best.x,best.y,best.z+best.scale,'⭐',4);
+    if(best.hp<=0){best.dead=true;score+=Math.round(100*mult*(best.type==='boss'?10:1));mult=Math.min(8,mult+.25);comboTimer=3;burst(best.x,best.y,best.z,'🪶',12);
+      if(Math.random()<.18)pickups.push({x:best.x,y:best.y,type:Math.random()<.5?'ammo':'health',life:12});
+    }
+  }
+}
+
+function burst(x,y,z,char,n){for(let i=0;i<n;i++)particles.push({x,y,z,char,vx:(Math.random()-.5)*3,vy:(Math.random()-.5)*3,vz:Math.random()*3+1,life:1})}
+
+function update(dt,now){
+  if(!started||paused)return;
+  const sprint=keys.ShiftLeft?1.65:1;
+  let mx=0,my=0;if(keys.KeyW)my++;if(keys.KeyS)my--;if(keys.KeyA)mx--;if(keys.KeyD)mx++;
+  const len=Math.hypot(mx,my)||1;mx/=len;my/=len;
+  const cs=Math.cos(player.a),sn=Math.sin(player.a);
+  player.x+=(cs*my-sn*mx)*player.speed*sprint*dt;
+  player.y+=(sn*my+cs*mx)*player.speed*sprint*dt;
+  if(keys.Space&&player.onGround){player.vy=5.2;player.onGround=false}
+  player.vy-=12*dt;player.z+=player.vy*dt;if(player.z<0){player.z=0;player.vy=0;player.onGround=true}
+  if(mouseDown)shoot(now);
+
+  for(const e of enemies){
+    if(e.dead)continue;
+    const dx=player.x-e.x,dy=player.y-e.y,d=Math.hypot(dx,dy)||1;
+    e.x+=dx/d*e.speed*dt;e.y+=dy/d*e.speed*dt;
+    if(e.type==='flyer')e.z=1.8+Math.sin(now*.006+e.x)*.5;
+    if(d<1.1+e.scale*.4){player.hp-=dt*(e.type==='boss'?24:e.type==='runner'?18:10);if(player.hp<=0)gameOver()}
+    e.hit=Math.max(0,e.hit-dt);
+  }
+  for(const p of particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.z+=p.vz*dt;p.vz-=6*dt;p.life-=dt}
+  particles=particles.filter(p=>p.life>0);
+  for(const p of pickups){p.life-=dt;const d=Math.hypot(player.x-p.x,player.y-p.y);if(d<1.2){if(p.type==='health')player.hp=Math.min(100,player.hp+30);else weapons[weapon].ammo+=30;p.life=0;message(p.type==='health'?'+ HEALTH':'+ AMMO')}}
+  pickups=pickups.filter(p=>p.life>0);
+  comboTimer-=dt;if(comboTimer<=0)mult=Math.max(1,mult-dt*.5);
+  if(enemies.every(e=>e.dead)){paused=true;setTimeout(()=>showUpgrades(),600)}
+  updateHUD();
+}
+
+function project(x,y,z){
+  const dx=x-player.x,dy=y-player.y;
+  const ca=Math.cos(-player.a),sa=Math.sin(-player.a);
+  const rx=dx*ca-dy*sa, rz=dx*sa+dy*ca;
+  if(rx<.2)return null;
+  const f=H*.8;
+  return {x:W/2+rz/rx*f,y:H/2-(z-player.z-1.2)/rx*f-player.pitch*f,s:f/rx,d:rx};
+}
+
+function draw(){
+  const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,'#69c7ff');g.addColorStop(.55,'#c8f0ff');g.addColorStop(.56,'#79c857');g.addColorStop(1,'#3d7d35');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#ffe27a';ctx.beginPath();ctx.arc(W*.82,H*.17,50,0,Math.PI*2);ctx.fill();
+
+  const things=[];
+  for(const p of props){const q=project(p.x,p.y,0);if(q)things.push({...q,obj:p,kind:'prop'})}
+  for(const p of pickups){const q=project(p.x,p.y,.45);if(q)things.push({...q,obj:p,kind:'pickup'})}
+  for(const e of enemies){if(!e.dead){const q=project(e.x,e.y,e.z);if(q)things.push({...q,obj:e,kind:'enemy'})}}
+  for(const p of particles){const q=project(p.x,p.y,p.z);if(q)things.push({...q,obj:p,kind:'particle'})}
+  things.sort((a,b)=>b.d-a.d);
+
+  for(const t of things){
+    if(t.kind==='prop'){ctx.font=`${Math.max(10,t.s*.7)}px serif`;ctx.fillText(t.obj.type==='hay'?'🟨':'🪵',t.x,t.y)}
+    if(t.kind==='pickup'){ctx.font=`${Math.max(14,t.s*.55)}px serif`;ctx.fillText(t.obj.type==='health'?'💚':'📦',t.x,t.y)}
+    if(t.kind==='particle'){ctx.globalAlpha=Math.max(0,t.obj.life);ctx.font=`${Math.max(12,t.s*.3)}px serif`;ctx.fillText(t.obj.char,t.x,t.y);ctx.globalAlpha=1}
+    if(t.kind==='enemy'){
+      const e=t.obj, size=t.s*e.scale;
+      ctx.save();ctx.translate(t.x,t.y);if(e.hit)ctx.globalAlpha=.55;
+      ctx.font=`${Math.max(20,size*1.45)}px serif`;ctx.textAlign='center';ctx.fillText(e.type==='boss'?'🐓':'🐔',0,0);
+      if(e.type==='armored'){ctx.font=`${Math.max(10,size*.65)}px serif`;ctx.fillText('🛡️',size*.3,-size*.3)}
+      if(e.type==='runner'){ctx.font=`${Math.max(10,size*.45)}px serif`;ctx.fillText('⚡',size*.35,-size*.5)}
+      if(e.type==='flyer'){ctx.font=`${Math.max(10,size*.5)}px serif`;ctx.fillText('🪽',-size*.45,-size*.25)}
+      if(e.type==='boss'||e.hp<e.max){ctx.fillStyle='#222';ctx.fillRect(-size*.5,size*.25,size,7);ctx.fillStyle='#ff4545';ctx.fillRect(-size*.5,size*.25,size*(e.hp/e.max),7)}
+      ctx.restore();
+    }
+  }
+  // weapon
+  ctx.save();ctx.translate(W*.72,H*.86);ctx.rotate(-.06);ctx.font=`${Math.min(150,W*.14)}px serif`;ctx.fillText(weapon===0?'🔫':weapon===1?'🟧':'🚀',0,0);ctx.restore();
+  requestAnimationFrame(draw);
+}
+
+function updateHUD(){
+  document.getElementById('wave').textContent=`Wave ${wave} · ${weapons[weapon].name}`;
+  document.getElementById('score').textContent=`Score ${score}`;
+  document.getElementById('mult').textContent=`x${mult.toFixed(1)}`;
+  document.getElementById('health').textContent=`❤ ${Math.max(0,Math.ceil(player.hp))}`;
+  const w=weapons[weapon];document.getElementById('ammo').textContent=`Ammo ${w.clip} / ${w.ammo}`;
+}
+function showUpgrades(){
+  const choices=[
+    ['Rapid Fire',()=>weapons.forEach(w=>w.rate*=.82)],
+    ['Heavy Rounds',()=>weapons.forEach(w=>w.damage*=1.25)],
+    ['Bigger Magazines',()=>weapons.forEach(w=>{w.mag+=Math.ceil(w.mag*.25);w.clip=w.mag})],
+    ['Farm Boots',()=>player.speed*=1.15],
+    ['First Aid',()=>player.hp=100]
+  ].sort(()=>Math.random()-.5).slice(0,3);
+  const cards=document.getElementById('cards');cards.innerHTML='';
+  for(const [name,fn] of choices){const c=document.createElement('div');c.className='card';c.innerHTML=`<h3>${name}</h3><p>Permanent upgrade for this run.</p>`;c.onclick=()=>{fn();document.getElementById('upgrade').style.display='none';wave++;paused=false;spawnWave()};cards.appendChild(c)}
+  document.getElementById('upgrade').style.display='flex';
+}
+function gameOver(){paused=true;document.exitPointerLock?.();const o=document.getElementById('overlay');o.style.display='flex';o.querySelector('h1').textContent='Rampage Over!';o.querySelector('p').textContent=`Final score: ${score} · Reached wave ${wave}`;document.getElementById('start').textContent='Play Again'}
+function reset(){score=0;wave=1;mult=1;player.x=player.y=player.z=0;player.hp=100;player.a=0;player.pitch=0;weapons[0]= {name:'Corn Popper',clip:12,ammo:72,mag:12,rate:240,damage:32,spread:.035,reload:900};weapons[1]={name:'Feather Blaster',clip:30,ammo:120,mag:30,rate:95,damage:15,spread:.06,reload:1200};weapons[2]={name:'Eggsploder',clip:5,ammo:25,mag:5,rate:650,damage:85,spread:.02,reload:1500};spawnWave();updateHUD()}
+document.getElementById('start').onclick=()=>{document.getElementById('overlay').style.display='none';started=true;paused=false;reset();canvas.requestPointerLock?.()};
+let prev=performance.now();function loop(now){const dt=Math.min(.033,(now-prev)/1000);prev=now;update(dt,now);requestAnimationFrame(loop)}requestAnimationFrame(loop);draw();
+</script>
+</body>
+</html>
